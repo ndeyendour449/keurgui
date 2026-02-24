@@ -1,33 +1,63 @@
+require('dotenv').config();
+
 const express = require('express');
 const bodyParser = require('body-parser');
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const User = require('./models/User');  // Importer le modèle User
 const Agent = require('./models/Agent');
-
+const QRCode = require('qrcode');
 const Admin = require('./models/Admin');
 const bcrypt = require('bcryptjs');  // Pour hacher les mots de passe
 const Joi = require('joi');  // Pour valider les données
 const cors = require('cors');
 const path = require('path');
 const app = express();
+const multer = require('multer');
+const agentRoute = require("./routes/agentRoute");
 // Middleware
 app.use(express.json());  // Permet de traiter les requêtes avec un corps JSON
 app.use(cors());  // Permet de gérer les problèmes de CORS (Cross-Origin Resource Sharing)
 app.use('/assets', express.static('assets'));
-
+app.use(express.static(path.join(__filename,"quarter/build")))
+app.use((req, res, next) => {
+  res.header('Content-Type', 'text/html; charset=utf-8');
+  next();
+});
+app.use(bodyParser.json());
+app.use(cors());
+app.use("/api", agentRoute);
+app.use('/uploads', express.static('uploads')); // pour servir les fichiers
+app.use('/api', require('./routes/uploads')); // adapte selon ton structure
 // Connexion à la base de données MongoDB
-const mongoURI = process.env.MONGODB_URL || "mongodb://localhost:27017/keurgui"; // Fallback en local
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, 'uploads/'); // Dossier où stocker les images
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, uniqueSuffix + path.extname(file.originalname));
+  }
+});
+const upload = multer({ storage: storage });
+const mongoURI = process.env.MONGODB_URL;
+
+if (!mongoURI) {
+  console.error("❌ Erreur : La variable d'environnement MONGODB_URL est introuvable.");
+  process.exit(1);
+}
 
 mongoose
   .connect(mongoURI, {
     
   })
-  .then(() => console.log("✅ Connexion réussie à MongoDB"))
+  .then(() => console.log("✅ Connexion réussie à MongoDB Atlas"))
   .catch((err) => {
     console.error("❌ Erreur de connexion MongoDB :", err.message);
-    process.exit(1); // Arrête l'application si la connexion échoue
+    process.exit(1);
   });
+
+
   const productSchema = new mongoose.Schema({
     title: { type: String, required: true },
     price: { type: Number, required: true },
@@ -43,6 +73,7 @@ mongoose
       longitude: { type: Number, required: true },
     },
     status: { type: String, enum: ['available', 'sold', 'rented'], default: 'available' },
+    coduStatus: { type: String, enum: ['codu', 'noncodu'], required: true },
     address: { type: String, required: true },
     city: { type: String, required: true },
     features: {
@@ -72,67 +103,77 @@ mongoose
     isOpenHouse: { type: Boolean, default: false },
     lotSize: { type: Number },
     description: { type: String },
-    agentName: { type: String, required: true },
+    
     moveInDate: { type: Date },
     isForeclosure: { type: Boolean, default: false },
+    agent: { type: mongoose.Schema.Types.ObjectId, ref: 'Agent', required: true }, // Cette référence à l'agent
   }, { timestamps: true });
-  
   // 📌 Ajout d'indexation pour améliorer la recherche
   productSchema.index({ coordinates: "2dsphere" });
   productSchema.index({ city: 1, price: 1, transactionType: 1 });
   
   // 📌 Création du modèle `Product` directement dans `server.js`
   const Product = mongoose.model('Product', productSchema);
-  
-// Validation des données de l'utilisateur
-const validateUser = (user) => {
-  const schema = Joi.object({
-    firstname: Joi.string().min(2).max(30).required(),
-    lastname: Joi.string().min(2).max(30).required(),
-    email: Joi.string().email().required(),
-    password: Joi.string().min(6).required(),
-    confirmpassword: Joi.string().valid(Joi.ref('password')).required().messages({
-      'any.only': 'Password confirmation does not match password',
-    }),
-  });
-  return schema.validate(user);
-};
+
+
+// const AdSchema = new mongoose.Schema({d
+//     title: String,
+//     mediaType: { type: String, enum: ["image", "video"], required: true }, // Détermine le type de média
+//     imageUrl: String,  // URL de l'image (si mediaType = "image")
+//     videoUrl: String,  // URL de la vidéo (si mediaType = "video")
+//     targetUrl: String, // Lien vers lequel rediriger en cliquant sur la pub
+//     position: String,  // header, sidebar, footer...
+//     active: Boolean,
+//     startDate: Date,A
+//     endDate: Date
+// });
+
+// const Ad = mongoose.model("Ad", AdSchema);
 
 // Middleware pour parser les requêtes JSON
-app.use(bodyParser.json());
-app.use(cors());
+
+
 // Middleware pour vérifier si l'utilisateur est admin
-app.post('/agents', async (req, res) => {
-  try {
-    const { email, password, agentName, nonAgence, territoire, langue, photoProfil, phoneNumber } = req.body;
+app.post('/agents', upload.single('photoProfil'), async (req, res) => {
+  const { email, password, phoneNumber, nonAgence, territoire, langue, presentation, infosSupplementaires, adresse } = req.body;
+  const photoProfil = req.file ? req.file.path : null;  // Utilise le chemin du fichier téléchargé
 
-    // Vérification que tous les champs sont fournis
-    if (!email || !password || !agentName || !nonAgence || !territoire || !langue || !photoProfil || !phoneNumber) {
-      return res.status(400).json({ message: 'Tous les champs sont obligatoires.' });
-    }
+  // Créer l'agent avec les données et l'image
+  const newAgent = new Agent({
+    email,
+    password,
+    phoneNumber,
+    nonAgence,
+    territoire,
+    langue,
+    photoProfil,  // Ajoute le chemin du fichier téléchargé
+    presentation,
+    infosSupplementaires,
+    adresse,
+  });
 
-    // Création d'un nouvel agent
-    const newAgent = new Agent({
-      email,
-      password,
-      agentName,
-      nonAgence,
-      territoire,
-      langue,
-      photoProfil,
-      phoneNumber, // Nouveau champ ajouté
-    });
-
-    // Sauvegarde de l'agent dans la base de données
-    await newAgent.save();
-
-    // Réponse après succès
-    res.status(201).json({ message: 'Agent créé avec succès', agent: newAgent });
-  } catch (err) {
-    console.error('Erreur lors de la création de l\'agent:', err);
-    res.status(500).json({ message: 'Erreur interne du serveur' });
-  }
+  await newAgent.save();
+  res.status(201).json({ message: "Agent créé avec succès", agent: newAgent });
 });
+// async function fixAgentField() {
+//   try {
+//     // Met à jour tous les produits où agent est une string
+//     const result = await Product.updateMany(
+//       { agent: { $type: "string" } },
+//       [ { $set: { agent: { $toObjectId: "$agent" } } } ]
+//     );
+//     console.log("Conversion terminée :", result);
+//   } catch (err) {
+//     console.error("Erreur pendant la conversion :", err);
+//   }
+// }
+
+// // Appelle la fonction de migration UNE SEULE FOIS au démarrage
+// mongoose.connection.once('open', async () => {
+//   await fixAgentField();
+//   // ... (le reste de ton démarrage serveur)
+// });
+
 app.delete('/agents/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -151,29 +192,56 @@ app.delete('/agents/:id', async (req, res) => {
     res.status(500).json({ message: 'Erreur serveur' });
   }
 });
-app.put('/agents/:id', async (req, res) => {
+app.put('/agents/:id', upload.single('photoProfil'), async (req, res) => {
   try {
     const { id } = req.params;
-    const updates = req.body;
 
-    // Vérifier si l'agent existe
-    const agent = await Agent.findById(id);
-    if (!agent) {
+    // Liste des champs autorisés à mettre à jour
+    const allowedFields = [
+      'email',
+      'agentName',
+      'phoneNumber',
+      'nonAgence',
+      'territoire',
+      'langue',
+      'presentation',
+      'infosSupplementaires',
+      'adresse'
+    ];
+
+    const updates = {};
+
+    // Extraire seulement les champs autorisés
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) {
+        updates[field] = req.body[field];
+      }
+    }
+
+    // Gérer la photo si elle est fournie
+    if (req.file) {
+      updates.photoProfil = req.file.filename;
+    }
+
+    const updatedAgent = await Agent.findByIdAndUpdate(id, updates, {
+      new: true,
+      runValidators: true,
+    });
+
+    if (!updatedAgent) {
       return res.status(404).json({ message: 'Agent non trouvé' });
     }
 
-    // Mise à jour des données de l'agent
-    const updatedAgent = await Agent.findByIdAndUpdate(id, updates, {
-      new: true, // Retourne les données mises à jour
-      runValidators: true, // Valide les données mises à jour
+    res.status(200).json({
+      message: 'Agent mis à jour avec succès',
+      agent: updatedAgent,
     });
-
-    res.status(200).json({ message: 'Agent mis à jour avec succès', agent: updatedAgent });
   } catch (error) {
-    console.error('Erreur lors de la mise à jour de l\'agent :', error);
-    res.status(500).json({ message: 'Erreur interne du serveur' });
+    console.error("Erreur lors de la mise à jour de l'agent :", error);
+    res.status(500).json({ message: "Erreur interne du serveur" });
   }
 });
+
 app.get('/agents', async (req, res) => {
   try {
     // Récupère tous les agents dans la base de données
@@ -193,16 +261,30 @@ app.get('/agents', async (req, res) => {
 });
 app.get('/agents/:id', async (req, res) => {
   try {
-    const agent = await Agent.findById(req.params.id);
+    const agentId = req.params.id;
+
+    // Vérification si l'ID est valide
+    if (!mongoose.Types.ObjectId.isValid(agentId)) {
+      return res.status(400).json({ message: 'ID d\'agent invalide' });
+    }
+
+    // Recherche de l'agent par son ID avec ses propriétés associées
+    const agent = await Agent.findById(agentId)
+      .populate('products');  // Remplir le champ 'products' avec les propriétés associées
+
+    // Si l'agent n'est pas trouvé, retourner une erreur 404
     if (!agent) {
       return res.status(404).json({ message: 'Agent non trouvé' });
     }
+
+    // Retourner les détails de l'agent avec ses propriétés
     res.status(200).json(agent);
   } catch (error) {
     console.error('Erreur lors de la récupération de l\'agent :', error);
     res.status(500).json({ message: 'Erreur interne du serveur' });
   }
 });
+
 
 app.post('/admin', async (req, res) => {
   try {
@@ -222,6 +304,8 @@ app.post('/admin', async (req, res) => {
 app.post('/login', async (req, res) => {
   const { email, password, role } = req.body;
 
+  console.log("🔹 Requête reçue pour login:", { email, role });
+
   try {
     let user;
     if (role === 'user') {
@@ -233,21 +317,36 @@ app.post('/login', async (req, res) => {
     }
 
     if (!user) {
+      console.log("❌ Utilisateur non trouvé !");
       return res.status(400).json({ message: 'Utilisateur non trouvé.' });
+    }
+
+    console.log("🔹 Utilisateur trouvé :", user);
+
+    // Vérifie que user.password existe
+    if (!user.password) {
+      console.error("🚨 ERREUR: L'utilisateur n'a pas de mot de passe enregistré !");
+      return res.status(500).json({ message: "Erreur serveur: mot de passe introuvable." });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
+      console.log("❌ Mot de passe incorrect !");
       return res.status(400).json({ message: 'Mot de passe incorrect.' });
     }
 
-    const token = jwt.sign({ userId: user._id, role: user.role }, 'secret_key', { expiresIn: '1h' });
+    console.log("✅ Mot de passe correct, génération du token...");
+    const token = jwt.sign({ userId: user._id, role }, 'secret_key', { expiresIn: '1h' });
 
-    res.json({ token });
+    res.json({ token, agent: user });
+
   } catch (err) {
-    res.status(500).json({ message: 'Erreur serveur.' });
+    console.error("🚨 ERREUR SERVEUR :", err.message);
+    console.error(err.stack); // Affiche le stack trace complet
+    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
   }
 });
+
 
 // app.post('/login', async (req, res) => {
 //   const { email, password } = req.body;
@@ -507,15 +606,27 @@ app.get('/api/prix', async (req, res) => {
 });
 app.get('/api/products/:id', async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id);
+    // Recherche du produit par son ID, en peuplant le champ "agent" pour inclure les données de l'agent associé
+    const product = await Product.findById(req.params.id).populate('agent');
+    
+    // Si le produit n'existe pas
     if (!product) {
       return res.status(404).send('Produit non trouvé');
     }
+    
+    // Si le produit existe, mais qu'il n'a pas d'agent associé
+    if (!product.agent) {
+      return res.status(404).send('Agent non trouvé pour ce produit');
+    }
+    
+    // Si tout est bon, retourner le produit avec les données de l'agent
     res.json(product);
   } catch (err) {
+    // En cas d'erreur, renvoyer une erreur serveur
     res.status(500).send(err.message);
   }
 });
+
 app.get('/api/products/:id/images', async (req, res) => {
   try {
       const product = await Product.findById(req.params.id);
@@ -551,102 +662,193 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
-
 app.post('/api/products', async (req, res) => {
   try {
-    const { 
-      title, 
-      price, 
-      transactionType, 
-      productType, 
-      propertyCategory, // Nouveau champ
-      status,           // Nouveau champ
-      address, 
-      city, 
-      
-      features, 
-      images, // Une seule image
-      buildingDetails, 
-      isVirtualTourAvailable, 
-      isOpenHouse, 
-      lotSize, 
-      description, 
-      agentName, 
-      moveInDate, 
-      isForeclosure, 
-      coordinates // Ajout des coordonnées
+    // Récupérer les données envoyées dans le corps de la requête
+    const {
+      agentName,
+      email,
+      password,
+      nonAgence,
+      territoire,
+      langue,
+      photoProfil,
+      phoneNumber,
+      title,
+      price,
+      transactionType,
+      productType,
+      propertyCategory,
+      coordinates,
+      status,
+      coduStatus,
+      address,
+      city,
+      features,
+      images,
+      buildingDetails,
+      isVirtualTourAvailable,
+      isOpenHouse,
+      lotSize,
+      description,
+      moveInDate,
+      isForeclosure,
     } = req.body;
 
-    // Validation des champs requis
-    if (!title || !price || !transactionType || !productType || !address || !city || !agentName || !images) {
-      return res.status(400).json({
-        message: 'Certains champs requis sont manquants.',
-      });
+    // Valider les données pour l'agent
+    if (!email || !password || !agentName || !nonAgence || !territoire || !langue || !photoProfil || !phoneNumber) {
+      return res.status(400).json({ message: 'Tous les champs obligatoires pour l\'agent doivent être remplis.' });
     }
 
-    // Validation des coordonnées
-    if (!coordinates || !coordinates.latitude || !coordinates.longitude) {
-      return res.status(400).json({
-        message: 'Les coordonnées sont requises (latitude et longitude).',
-      });
+    // Vérifier si l'email existe déjà dans la base de données
+    const existingAgent = await Agent.findOne({ email });
+    if (existingAgent) {
+      return res.status(400).json({ message: 'Un agent avec cet email existe déjà.' });
     }
-    // Création d'une nouvelle propriété
+
+    // Créer l'agent
+    const newAgent = new Agent({
+      email,
+      password,
+      agentName,
+      nonAgence,
+      territoire,
+      langue,
+      photoProfil,
+      phoneNumber,
+      products: [] // Initialiser `products` comme un tableau vide
+    });
+
+    // Hacher le mot de passe de l'agent (si nécessaire)
+    const salt = await bcrypt.genSalt(10);
+    newAgent.password = await bcrypt.hash(password, salt);
+
+    // Sauvegarder l'agent dans la base de données
+    await newAgent.save();
+
+    // Valider les données pour le produit
+    if (!title || !price || !transactionType || !productType || !propertyCategory || !coordinates || !address || !city) {
+      return res.status(400).json({ message: 'Tous les champs obligatoires pour le produit doivent être remplis.' });
+    }
+
+    // Créer la propriété (produit)
     const newProduct = new Product({
       title,
       price,
       transactionType,
       productType,
-      propertyCategory, // Ajout du champ
-      status: status || 'available', // Défaut à "available" si non spécifié
-     
+      propertyCategory,
+      coordinates, // { latitude, longitude }
+      status: status || 'available', // Par défaut, "available"
+      coduStatus,
       address,
       city,
-      coordinates: {
-        latitude: coordinates.latitude,
-        longitude: coordinates.longitude,
-      },
-      features: {
-        bedrooms: features?.bedrooms || 0,
-        bathrooms: features?.bathrooms || 0,
-        parkingSpaces: features?.parkingSpaces || 0,
-        garages: features?.garages || 0,
-        area: features?.area || null,
-        lotSize: features?.lotSize || null,
-        hasPool: features?.hasPool || false,
-        isWheelchairAccessible: features?.isWheelchairAccessible || false,
-        isWaterfront: features?.isWaterfront || false,
-        hasNavigableWater: features?.hasNavigableWater || false,
-        allowsPets: features?.allowsPets || false,
-        allowsSmoking: features?.allowsSmoking || false,
-      },
-      images, // Ajout de l'image (une seule URL)
-      buildingDetails: {
-        yearBuilt: buildingDetails?.yearBuilt || null,
-        isNewConstruction: buildingDetails?.isNewConstruction || false,
-        isHistorical: buildingDetails?.isHistorical || false,
-        structureType: buildingDetails?.structureType || 'Plain-pied',
-      },
+      features,
+      images,
+      buildingDetails,
       isVirtualTourAvailable: isVirtualTourAvailable || false,
       isOpenHouse: isOpenHouse || false,
       lotSize,
       description,
-      agentName,
-      moveInDate: moveInDate || null,
+      moveInDate,
       isForeclosure: isForeclosure || false,
+      agent: newAgent._id, // Référence à l'agent
     });
 
-    // Sauvegarde dans MongoDB
+    // Sauvegarder le produit dans la base de données
     await newProduct.save();
 
+    // Ajouter l'ID du produit dans le tableau `products` de l'agent
+    newAgent.products.push(newProduct._id);
+
+    // Sauvegarder l'agent avec le produit ajouté
+    await newAgent.save();
+
+    // Répondre avec un message de succès et les informations de l'agent et du produit créé
     res.status(201).json({
-      message: 'Propriété créée avec succès',
+      message: 'Agent et propriété créés avec succès!',
+      agent: newAgent,
       product: newProduct,
     });
-  } catch (error) {
-    res.status(400).json({
-      message: 'Erreur lors de la création de la propriété',
-      error: error.message,
+
+  } catch (err) {
+    console.error('Erreur:', err);  // Afficher l'erreur dans la console du serveur
+    res.status(500).json({ message: 'Erreur serveur lors de la création de l\'agent et de la propriété.', error: err.message });
+  }
+});
+
+app.post('/api/products/create-with-agent', async (req, res) => {  try {
+    const {
+      title,
+      price,
+      transactionType,
+      productType,
+      propertyCategory,
+      coordinates,
+      status,
+      coduStatus,
+      address,
+      city,
+      features,
+      images,
+      buildingDetails,
+      isVirtualTourAvailable,
+      isOpenHouse,
+      lotSize,
+      description,
+      moveInDate,
+      isForeclosure,
+      agent, // <- ID de l'agent déjà existant
+    } = req.body;
+
+    // 🔒 Vérifie que l'agent existe
+    const existingAgent = await Agent.findById(agent);
+    if (!existingAgent) {
+      return res.status(400).json({ message: 'Agent introuvable avec cet ID.' });
+    }
+
+    // 🔎 Validation des champs du produit
+    if (!title || !price || !transactionType || !productType || !propertyCategory || !coordinates || !address || !city || !images.length) {
+      return res.status(400).json({ message: 'Tous les champs obligatoires pour le produit doivent être remplis.' });
+    }
+
+    const newProduct = new Product({
+      title,
+      price,
+      transactionType,
+      productType,
+      propertyCategory,
+      coordinates,
+      status: status || 'available',
+      coduStatus,
+      address,
+      city,
+      features,
+      images,
+      buildingDetails,
+      isVirtualTourAvailable: isVirtualTourAvailable || false,
+      isOpenHouse: isOpenHouse || false,
+      lotSize,
+      description,
+      moveInDate,
+      isForeclosure: isForeclosure || false,
+      agent: agent, // <- ID existant
     });
+
+    await newProduct.save();
+
+    // Ajoute le produit à l'agent existant
+    existingAgent.products.push(newProduct._id);
+    await existingAgent.save();
+
+    res.status(201).json({
+      message: 'Produit ajouté avec succès à l\'agent existant !',
+      product: newProduct,
+    });
+
+  } catch (err) {
+    console.error('Erreur:', err);
+    res.status(500).json({ message: 'Erreur serveur lors de la création du produit.', error: err.message });
   }
 });
 
@@ -878,10 +1080,10 @@ app.get("/propertyCount", async (req, res) => {
 
 app.get("/api/results", async (req, res) => {
   try {
-    const { types, structureTypes } = req.query;
+    const { types, structureTypes, coduStatus } = req.query;
     let filters = {};
 
-    // Validation et formatage des filtres
+    // 🔹 Filtrage par type de produit
     if (types && typeof types === "string") {
       const validProductTypes = [
         "appartement", "bureau_commerce", "hotel_restaurant",
@@ -893,6 +1095,7 @@ app.get("/api/results", async (req, res) => {
       }
     }
 
+    // 🔹 Filtrage par type de structure
     if (structureTypes && typeof structureTypes === "string") {
       const validStructureTypes = [
         "Bord de l'eau", "Accès à l'eau", "Plan d'eau navigable", "Villégiature"
@@ -901,6 +1104,11 @@ app.get("/api/results", async (req, res) => {
       if (requestedStructureTypes.length > 0) {
         filters["buildingDetails.structureType"] = { $in: requestedStructureTypes };
       }
+    }
+
+    // 🔥 Ajout du filtre CODU
+    if (coduStatus && ["codu", "noncodu"].includes(coduStatus)) {
+      filters.coduStatus = coduStatus;
     }
 
     console.log("🟢 Filtres appliqués :", JSON.stringify(filters, null, 2));
@@ -920,6 +1128,7 @@ app.get("/api/results", async (req, res) => {
     res.status(500).json({ error: "Une erreur s'est produite lors de la récupération des résultats." });
   }
 });
+
 
 app.get("/api/ters", async (req, res) => {
   try {
@@ -963,9 +1172,316 @@ app.get("/api/ters", async (req, res) => {
   }
 });
 
+app.patch('/api/products/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    // Mettre à jour le statut dans la base de données
+    const updatedProduct = await Product.findByIdAndUpdate(
+      id,
+      { status },
+      { new: true }
+    );
+
+    if (!updatedProduct) {
+      return res.status(404).json({ message: "Produit non trouvé" });
+    }
+
+    res.status(200).json(updatedProduct);
+  } catch (error) {
+    console.error("Erreur lors de la mise à jour du statut :", error);
+    res.status(500).json({ message: "Erreur serveur" });
+  }
+});
+app.get('/api/products/agent/:agentId', async (req, res) => {
+  try {
+    const agentId = req.params.agentId;
+    console.log('ID de l\'agent reçu :', agentId); // Log l'ID reçu
+
+    // Vérifiez si l'ID de l'agent est valide
+    if (!mongoose.Types.ObjectId.isValid(agentId)) {
+      return res.status(400).json({ message: 'ID de l\'agent invalide' });
+    }
+
+    // Convertir l'ID en ObjectId
+    const agentObjectId = new mongoose.Types.ObjectId(agentId);
+
+    // Recherchez les propriétés associées à l'agent
+    const products = await Product.find({ agent: agentObjectId });
+    console.log('Propriétés trouvées :', products); // Log les propriétés trouvées
+
+    // Renvoyez les propriétés trouvées
+    res.json({
+      products,
+      total: products.length,
+      currentPage: 1,
+      totalPages: 1,
+    });
+  } catch (err) {
+    console.error('Erreur lors de la récupération des propriétés de l\'agent :', err);
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+
+// **Endpoint pour ajouter une publicité**
+app.post("/ads", async (req, res) => {
+  try {
+    const { title, mediaType, imageUrl, videoUrl, targetUrl, position, active, startDate, endDate } = req.body;
+
+    // Vérifier que le mediaType est correct
+    if (!["image", "video"].includes(mediaType)) {
+      return res.status(400).json({ error: "Le type de média doit être 'image' ou 'video'." });
+    }
+
+    // Vérifier que l'URL de l'image ou de la vidéo est bien fournie
+    if (mediaType === "image" && !imageUrl) {
+      return res.status(400).json({ error: "L'URL de l'image est requise pour les publicités avec une image." });
+    }
+    if (mediaType === "video" && !videoUrl) {
+      return res.status(400).json({ error: "L'URL de la vidéo est requise pour les publicités avec une vidéo." });
+    }
+
+    const newAd = new Ad({
+      title,
+      mediaType,
+      imageUrl: mediaType === "image" ? imageUrl : null,  // Stocker uniquement l'URL image si mediaType = "image"
+      videoUrl: mediaType === "video" ? videoUrl : null,  // Stocker uniquement l'URL vidéo si mediaType = "video"
+      targetUrl,
+      position,
+      active,
+      startDate,
+      endDate
+    });
+
+    await newAd.save();
+    res.status(201).json({ message: "Publicité ajoutée avec succès !" });
+  } catch (error) {
+    res.status(500).json({ error: "Erreur lors de l'ajout de la publicité." });
+  }
+});
+
+// Récupérer toutes les publicités actives
+app.get("/ads", async (req, res) => {
+  try {
+    const ads = await Ad.find({ active: true });
+    res.json(ads);
+  } catch (error) {
+    res.status(500).json({ error: "Erreur lors de la récupération des publicités." });
+  }
+});
 
 
 
+app.get('/api/agents/:id', async (req, res) => {
+  try {
+    const agentId = req.params.id;
+
+    // Vérifiez si l'ID est valide
+    if (!mongoose.Types.ObjectId.isValid(agentId)) {
+      return res.status(400).json({ message: 'ID invalide' });
+    }
+
+    // Recherchez l'agent dans la base de données
+    const agent = await Agent.findById(agentId);
+
+    // Si l'agent n'est pas trouvé
+    if (!agent) {
+      return res.status(404).json({ message: 'Agent non trouvé' });
+    }
+
+    // Renvoyez les informations de l'agent
+    res.json(agent);
+  } catch (error) {
+    console.error('Erreur lors de la récupération de l\'agent :', error);
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+app.get('/property/:id', async (req, res) => {
+  try {
+    const propertyId = req.params.id;
+
+    // Récupérer la propriété par son ID
+    const property = await Product.findById(propertyId).populate('agent');
+
+    if (!property) {
+      return res.status(404).json({ message: 'Propriété non trouvée' });
+    }
+
+    // Récupérer l'agent associé
+    const agent = property.agent;
+
+    // Afficher les détails de la propriété et de l'agent
+    res.json({
+      property: {
+        title: property.title,
+        price: property.price,
+        transactionType: property.transactionType,
+        productType: property.productType,
+        propertyCategory: property.propertyCategory,
+        coordinates: property.coordinates,
+        status: property.status,
+        coduStatus: property.coduStatus,
+        address: property.address,
+        city: property.city,
+        features: property.features,
+        images: property.images,
+        buildingDetails: property.buildingDetails,
+        isVirtualTourAvailable: property.isVirtualTourAvailable,
+        isOpenHouse: property.isOpenHouse,
+        lotSize: property.lotSize,
+        description: property.description,
+        moveInDate: property.moveInDate,
+        isForeclosure: property.isForeclosure,
+      },
+      agent: {
+        agentName: agent.agentName,
+        email: agent.email,
+        phoneNumber: agent.phoneNumber,
+        nonAgence: agent.nonAgence,
+        territoire: agent.territoire,
+        langue: agent.langue,
+        photoProfil: agent.photoProfil,
+        presentation: agent.presentation,
+        infosSupplementaires: agent.infosSupplementaires,
+        adresse: agent.adresse,
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+app.get("/api/agent/:agentId/properties", async (req, res) => {
+  const { agentId } = req.params;
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 4;
+  const { status } = req.query;
+
+  if (!mongoose.Types.ObjectId.isValid(agentId)) {
+    return res.status(400).json({ message: "ID d'agent invalide" });
+  }
+  if (page <= 0 || limit <= 0) {
+    return res.status(400).json({ message: "La page et la limite doivent être des nombres positifs" });
+  }
+
+  try {
+    // Filtres supplémentaires
+    const filters = { agent: agentId };
+    if (status) filters.status = status;
+
+    // Pagination
+    const skip = (page - 1) * limit;
+
+    // Récupération des propriétés
+    const properties = await Product.find(filters)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean()
+      .populate('agent', 'agentName email');
+
+    const totalCount = await Product.countDocuments(filters);
+
+    res.json({
+      success: true,
+      properties,
+      totalPages: Math.ceil(totalCount / limit),
+      currentPage: page,
+      totalProperties: totalCount
+    });
+  } catch (error) {
+    console.error("Erreur:", error);
+    res.status(500).json({
+      success: false,
+      message: "Erreur serveur lors de la récupération des propriétés"
+    });
+  }
+});
+
+// Serveur Express
+app.get('/api/products/:productId', async (req, res) => {
+  try {
+    const productId = req.params.productId;
+    
+    // Récupérer le produit et son agent associé
+    const product = await Product.findById(productId).populate('agent');
+    
+    if (!product) {
+      return res.status(404).json({ message: 'Produit non trouvé.' });
+    }
+
+    // Répondre avec les données du produit et de l'agent
+    res.status(200).json({ product });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Erreur serveur lors de la récupération du produit.' });
+  }
+});
+app.get('/api/products/studio-chambre', async (req, res) => {
+  try {
+    const products = await Product.find({ productType: 'studio_chambre' });
+    res.json(products);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Dans votre fichier de routes
+app.get("/api/agent/:agentId/products", async (req, res) => {
+  const { agentId } = req.params;
+  const { page = 1, limit = 4, status } = req.query;
+
+  try {
+    // Filtres
+    const filters = { agent: agentId };
+    if (status) filters.status = status;
+
+    // Récupération avec pagination
+    const products = await Product.find(filters)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit));
+
+    const totalCount = await Product.countDocuments(filters);
+
+    res.json({
+      success: true,
+      products,
+      totalPages: Math.ceil(totalCount / limit),
+      currentPage: parseInt(page),
+      totalProducts: totalCount
+    });
+
+  } catch (error) {
+    res.status(500).json({ 
+      success: false,
+      message: "Erreur serveur"
+    });
+  }
+});
+app.post('/register-admin', upload.single('profileImage'), async (req, res) => {
+  try {
+    const { email, password, fullName } = req.body;
+    const profileImage = req.file ? `/uploads/admins/${req.file.filename}` : '';
+
+    const existing = await Admin.findOne({ email });
+    if (existing) {
+      return res.status(400).json({ message: "Cet admin existe déjà." });
+    }
+
+    const newAdmin = new Admin({ email, password, fullName, profileImage });
+    await newAdmin.save();
+
+    res.status(201).json({ message: "Admin créé avec succès", admin: newAdmin });
+  } catch (error) {
+    console.error("Erreur création admin :", error.message);
+    res.status(500).json({ message: "Erreur serveur", error: error.message });
+  }
+});
 // Démarrer le serveur
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
