@@ -72,6 +72,11 @@ mongoose
       latitude: { type: Number, required: true },
       longitude: { type: Number, required: true },
     },
+    approvalStatus: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected'],
+      default: 'pending'
+    },
     status: { type: String, enum: ['available', 'sold', 'rented'], default: 'available' },
     coduStatus: { type: String, enum: ['codu', 'noncodu'], required: true },
     address: { type: String, required: true },
@@ -641,27 +646,26 @@ app.get('/api/products/:id/images', async (req, res) => {
 // Routes pour les produits
 app.get('/api/products', async (req, res) => {
   try {
-    const { search } = req.query; // Récupération du paramètre `search` de la requête
+    const { search } = req.query;
 
-    let query = {};
+    // Requête de base : uniquement les produits approuvés
+    let query = { approvalStatus: 'approved' };
+
     if (search) {
-      // Si une recherche est spécifiée, chercher dans plusieurs champs avec une correspondance partielle
-      query = {
-        $or: [
-          { city: { $regex: search, $options: 'i' } },
-          { address: { $regex: search, $options: 'i' } },
-          { title: { $regex: search, $options: 'i' } }
-        ]
-      };
+      // Ajouter la recherche si le paramètre `search` est fourni
+      query.$or = [
+        { city: { $regex: search, $options: 'i' } },
+        { address: { $regex: search, $options: 'i' } },
+        { title: { $regex: search, $options: 'i' } }
+      ];
     }
 
-    const products = await Product.find(query).limit(50); // Limite à 50 résultats pour éviter une surcharge
+    const products = await Product.find(query).limit(50);
     res.json(products);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 });
-
 app.post('/api/products', async (req, res) => {
   try {
     // Récupérer les données envoyées dans le corps de la requête
@@ -820,6 +824,7 @@ app.post('/api/products/create-with-agent', async (req, res) => {  try {
       propertyCategory,
       coordinates,
       status: status || 'available',
+      approvalStatus: "approved",
       coduStatus,
       address,
       city,
@@ -1002,22 +1007,23 @@ app.get('/api/fil', async (req, res) => {
 
 
 app.get("/api/filtre", async (req, res) => {
-  const { transactionType, address, minPrice, maxPrice } = req.query;
-  
-  let query = {};
-  if (transactionType) query.transactionType = transactionType;
-  if (address) query.address = { $regex: address, $options: "i" }; // Filtrage insensible à la casse
-  if (minPrice) query.price = { $gte: Number(minPrice) };
-  if (maxPrice) query.price = { ...query.price, $lte: Number(maxPrice) };
-
   try {
+    const { transactionType, address, minPrice, maxPrice } = req.query;
+
+    // Base query : seulement les produits approuvés
+    let query = { approvalStatus: 'approved' };
+
+    if (transactionType) query.transactionType = transactionType;
+    if (address) query.address = { $regex: address, $options: "i" };
+    if (minPrice) query.price = { ...query.price, $gte: Number(minPrice) };
+    if (maxPrice) query.price = { ...query.price, $lte: Number(maxPrice) };
+
     const products = await Product.find(query);
     res.json(products);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
 
 app.get("/api/apprt", async (req, res) => {
   const { productType } = req.query;
@@ -1480,6 +1486,97 @@ app.post('/register-admin', upload.single('profileImage'), async (req, res) => {
   } catch (error) {
     console.error("Erreur création admin :", error.message);
     res.status(500).json({ message: "Erreur serveur", error: error.message });
+  }
+});
+app.post('/agent/soumission', async (req, res) => {
+
+  try {
+
+    const product = new Product({
+      ...req.body,
+      approvalStatus: "pending" // ⏳ attente validation admin
+    });
+
+    await product.save();
+
+    res.status(201).json({
+      message: "Propriété envoyée pour validation",
+      product
+    });
+
+  } catch (error) {
+
+    console.error(error);
+
+    res.status(500).json({
+      message: "Erreur création propriété",
+      error: error.message
+    });
+
+  }
+
+});
+app.post('/api/productss', async (req, res) => {
+  try {
+
+    const { role, agent } = req.body;
+
+    const approvalStatus = role === "agent" ? "pending" : "approved";
+
+    const product = new Product({
+      ...req.body,
+      agent: agent,
+      approvalStatus
+    });
+
+    const savedProduct = await product.save();
+
+    res.status(201).json({
+      message:
+        role === "agent"
+          ? "Produit créé en attente d'approbation"
+          : "Produit publié directement",
+      product: savedProduct
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      message: "Erreur lors de la création du produit",
+      error: error.message
+    });
+  }
+});
+// Backend GET
+
+// Route GET : récupérer uniquement les produits approuvés
+app.get('/api/productss', async (req, res) => {
+  try {
+    const approvedProducts = await Product.find({ approvalStatus: 'approved' }).lean();
+    res.status(200).json(approvedProducts); // renvoie uniquement les produits approuvés
+  } catch (error) {
+    res.status(500).json({
+      message: "Erreur lors de la récupération des produits approuvés",
+      error: error.message
+    });
+  }
+});
+
+// GET /api/products/pending
+app.get('/pending', async (req, res) => {
+  try {
+    const pendingProducts = await Product.find({ approvalStatus: "pending" });
+    res.json(pendingProducts);
+  } catch (error) {
+    console.error("Erreur lors de la récupération des produits en attente:", error);
+    res.status(500).json({ message: "Erreur serveur" });
+  }
+});
+app.patch('/products/:id/approve', async (req, res) => {
+  try {
+    const product = await Product.findByIdAndUpdate(req.params.id, { approvalStatus: 'approved' }, { new: true });
+    res.json(product);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 // Démarrer le serveur
