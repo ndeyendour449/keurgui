@@ -27,7 +27,13 @@ app.use((req, res, next) => {
 app.use(bodyParser.json());
 app.use(cors());
 app.use("/api", agentRoute);
-app.use('/uploads', express.static('uploads')); // pour servir les fichiers
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Log pour voir les requêtes d'images
+app.use('/uploads', (req, res, next) => {
+  console.log('📸 Requête image:', req.url);
+  console.log('📁 Chemin complet:', path.join(__dirname, 'uploads', req.url));
+  next();
+}, express.static(path.join(__dirname, 'uploads')));
 app.use('/api', require('./routes/uploads')); // adapte selon ton structure
 // Connexion à la base de données MongoDB
 const storage = multer.diskStorage({
