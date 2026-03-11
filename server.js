@@ -17,23 +17,23 @@ const multer = require('multer');
 const agentRoute = require("./routes/agentRoute");
 // Middleware
 app.use(express.json());  // Permet de traiter les requêtes avec un corps JSON
-app.use(cors());  // Permet de gérer les problèmes de CORS (Cross-Origin Resource Sharing)
+app.use(cors({
+  origin: '*'
+}));
 app.use('/assets', express.static('assets'));
-app.use(express.static(path.join(__filename,"quarter/build")))
 app.use((req, res, next) => {
   res.header('Content-Type', 'text/html; charset=utf-8');
   next();
 });
 app.use(bodyParser.json());
-app.use(cors());
+
 app.use("/api", agentRoute);
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-// Log pour voir les requêtes d'images
+
 app.use('/uploads', (req, res, next) => {
-  console.log('📸 Requête image:', req.url);
-  console.log('📁 Chemin complet:', path.join(__dirname, 'uploads', req.url));
+  console.log('📸 Image demandée:', req.url);
   next();
-}, express.static(path.join(__dirname, 'uploads')));
+});
 app.use('/api', require('./routes/uploads')); // adapte selon ton structure
 // Connexion à la base de données MongoDB
 const storage = multer.diskStorage({
