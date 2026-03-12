@@ -4,41 +4,71 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
-const User = require('./models/User');  // Importer le modèle User
+const User = require('./models/User');
 const Agent = require('./models/Agent');
 const QRCode = require('qrcode');
 const Admin = require('./models/Admin');
-const bcrypt = require('bcryptjs');  // Pour hacher les mots de passe
-const Joi = require('joi');  // Pour valider les données
+const bcrypt = require('bcryptjs');
+const Joi = require('joi');
 const cors = require('cors');
 const path = require('path');
-const app = express();
 const multer = require('multer');
 const agentRoute = require("./routes/agentRoute");
-// Middleware
-app.use(express.json());  // Permet de traiter les requêtes avec un corps JSON
-app.use(cors({
-  origin: '*'
-}));
-app.use('/assets', express.static('assets'));
-app.use((req, res, next) => {
-  res.header('Content-Type', 'text/html; charset=utf-8');
-  next();
-});
+
+const app = express();
+
+// ============================================
+// 1. MIDDLEWARE DE BASE (toujours en premier)
+// ============================================
+app.use(cors({ origin: '*' }));
+app.use(express.json());
 app.use(bodyParser.json());
 
-app.use("/api", agentRoute);
+// ============================================
+// 2. FICHIERS STATIQUES (avant toutes les routes)
+// ============================================
+// ✅ Les fichiers statiques DOIVENT être servis avant les middlewares qui modifient les headers
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/assets', express.static('assets'));
 
+// ============================================
+// 3. MIDDLEWARE DE LOG (optionnel, pour déboguer)
+// ============================================
 app.use('/uploads', (req, res, next) => {
   console.log('📸 Image demandée:', req.url);
   next();
 });
-app.use('/api', require('./routes/uploads')); // adapte selon ton structure
-// Connexion à la base de données MongoDB
+
+// ============================================
+// 4. ROUTES API (après les fichiers statiques)
+// ============================================
+app.use("/api", agentRoute);
+app.use('/api', require('./routes/uploads'));
+
+// ============================================
+// 5. MIDDLEWARE DE CONTENT-TYPE (uniquement pour les routes HTML si nécessaire)
+// ============================================
+// ⚠️ Ce middleware a été MODIFIÉ pour ne pas interférer avec les images
+// Il ne s'applique que si le type n'est pas déjà défini (optionnel)
+app.use((req, res, next) => {
+  // NE PAS forcer le Content-Type pour toutes les requêtes
+  // On le fait seulement pour les routes qui DOIVENT être du HTML
+  if (req.url.startsWith('/api') || req.url.startsWith('/uploads') || req.url.startsWith('/assets')) {
+    return next();
+  }
+  // Pour les autres routes (comme les pages HTML si vous en avez)
+  if (!res.getHeader('Content-Type')) {
+    res.header('Content-Type', 'text/html; charset=utf-8');
+  }
+  next();
+});
+
+// ============================================
+// 6. CONFIGURATION MULTER
+// ============================================
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, 'uploads/'); // Dossier où stocker les images
+    cb(null, 'uploads/');
   },
   filename: function (req, file, cb) {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -46,6 +76,10 @@ const storage = multer.diskStorage({
   }
 });
 const upload = multer({ storage: storage });
+
+// ============================================
+// 7. CONNEXION MONGODB
+// ============================================
 const mongoURI = process.env.MONGODB_URL;
 
 if (!mongoURI) {
@@ -54,15 +88,12 @@ if (!mongoURI) {
 }
 
 mongoose
-  .connect(mongoURI, {
-    
-  })
+  .connect(mongoURI)
   .then(() => console.log("✅ Connexion réussie à MongoDB Atlas"))
   .catch((err) => {
     console.error("❌ Erreur de connexion MongoDB :", err.message);
     process.exit(1);
   });
-
 
   const productSchema = new mongoose.Schema({
     title: { type: String, required: true },
