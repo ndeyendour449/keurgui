@@ -238,7 +238,6 @@ app.put('/agents/:id', upload.single('photoProfil'), async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Liste des champs autorisés à mettre à jour
     const allowedFields = [
       'email',
       'agentName',
@@ -248,19 +247,25 @@ app.put('/agents/:id', upload.single('photoProfil'), async (req, res) => {
       'langue',
       'presentation',
       'infosSupplementaires',
-      'adresse'
+      'adresse',
+      'password'
     ];
 
     const updates = {};
 
-    // Extraire seulement les champs autorisés
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {
         updates[field] = req.body[field];
       }
     }
 
-    // Gérer la photo si elle est fournie
+    // Hash du mot de passe
+    if (updates.password) {
+      const bcrypt = require("bcryptjs");
+      const salt = await bcrypt.genSalt(10);
+      updates.password = await bcrypt.hash(updates.password, salt);
+    }
+
     if (req.file) {
       updates.photoProfil = req.file.filename;
     }
@@ -278,6 +283,7 @@ app.put('/agents/:id', upload.single('photoProfil'), async (req, res) => {
       message: 'Agent mis à jour avec succès',
       agent: updatedAgent,
     });
+
   } catch (error) {
     console.error("Erreur lors de la mise à jour de l'agent :", error);
     res.status(500).json({ message: "Erreur interne du serveur" });
