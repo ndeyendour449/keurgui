@@ -201,6 +201,10 @@ router.post("/agents", upload.single("photoProfil"), async (req, res) => {
 
 router.post("/forgot-password-agent", async (req, res) => {
   try {
+    console.log("🔍 Début du forgot-password-agent");
+    console.log("EMAIL_USER défini ?", !!process.env.EMAIL_USER);
+    console.log("EMAIL_PASS défini ?", !!process.env.EMAIL_PASS);
+    
     const { email } = req.body;
 
     if (!email) {
@@ -218,9 +222,11 @@ router.post("/forgot-password-agent", async (req, res) => {
 
     agent.resetPasswordToken = token;
     agent.resetPasswordExpires = expires;
+
+    console.log("💾 Sauvegarde de l'agent...");
     await agent.save();
 
-    // Configuration Gmail SMTP sécurisée
+    console.log("📧 Configuration du transporter...");
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
       port: 465,
@@ -231,14 +237,13 @@ router.post("/forgot-password-agent", async (req, res) => {
       }
     });
 
-    // Vérifier la connexion
-    await transporter.verify().catch(err => {
-      console.error("Erreur de connexion SMTP:", err);
-      throw new Error("Impossible de se connecter à Gmail");
-    });
+    console.log("🔗 Vérification de la connexion SMTP...");
+    await transporter.verify();
+    console.log("✅ Connexion SMTP OK");
 
     const resetUrl = `https://www.keurgui.sn/#/reset-password-agent/${token}`;
 
+    console.log("📤 Envoi de l'email à:", agent.email);
     await transporter.sendMail({
       from: `"Keurgui" <${process.env.EMAIL_USER}>`,
       to: agent.email,
@@ -251,15 +256,20 @@ router.post("/forgot-password-agent", async (req, res) => {
       `
     });
 
+    console.log("✅ Email envoyé avec succès");
     res.json({
       message: "Lien de réinitialisation envoyé à votre email"
     });
 
   } catch (error) {
-    console.error("Erreur complète:", error);
+    console.error("❌ ERREUR COMPLÈTE:");
+    console.error("Message:", error.message);
+    console.error("Code:", error.code);
+    console.error("Stack:", error.stack);
+    
     res.status(500).json({
       message: "Erreur serveur",
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      errorDetails: error.message // Envoyer au frontend temporairement
     });
   }
 });
