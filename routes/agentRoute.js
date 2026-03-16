@@ -9,7 +9,8 @@ const router = express.Router();
 const multer = require("multer");
 const path = require("path");
 const QRCode = require('qrcode');
-
+const crypto = require("crypto");
+const nodemailer = require("nodemailer");
 // Configuration du stockage
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -197,4 +198,108 @@ router.post("/agents", upload.single("photoProfil"), async (req, res) => {
       res.status(500).json({ message: "Erreur serveur", error });
     }
   });
+
+router.post("/forgot-password-agent", async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ message: "Email requis" });
+    }
+
+    // Vérifier si l'agent existe
+    const agent = await Agent.findOne({ email });
+
+    if (!agent) {
+      return res.status(404).json({ message: "Email introuvable" });
+    }
+
+    // Générer un token
+    const token = crypto.randomBytes(32).toString("hex");
+
+    // Expiration 1 heure
+    const expires = Date.now() + 3600000;
+
+    agent.resetPasswordToken = token;
+    agent.resetPasswordExpires = expires;
+
+    await agent.save();
+
+    // Configuration Gmail SMTP
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
+      }
+    });
+
+    // Lien de reset
+    const resetUrl = `https://www.keurgui.sn/#/reset-password-agent/${token}`;
+    // Envoi email
+    await transporter.sendMail({
+      from: `"Keurgui" <${process.env.EMAIL_USER}>`,
+      to: agent.email,
+      subject: "Réinitialisation du mot de passe",
+      html: `
+        <p>Bonjour ${agent.agentName}</p>
+        <p>Cliquez sur le lien ci-dessous pour réinitialiser votre mot de passe :</p>
+        <a href="${resetUrl}">${resetUrl}</a>
+        <p>Ce lien expire dans 1 heure.</p>
+      `
+    });
+
+    res.json({
+      message: "Lien de réinitialisation envoyé à votre email"
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      message: "Erreur serveur"
+    });
+  }
+});
+
+router.post("/reset-password-agent/:token", async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { password } = req.body;
+
+    if (!token || !password) {
+      return res.status(400).json({
+        message: "Token et nouveau mot de passe requis",
+      });
+    }
+
+    const agent = await Agent.findOne({
+      resetPasswordToken: token,
+      resetPasswordExpires: { $gt: Date.now() },
+    });
+
+    if (!agent) {
+      return res.status(400).json({
+        message: "Token invalide ou expiré",
+      });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    agent.password = await bcrypt.hash(password, salt);
+
+    agent.resetPasswordToken = undefined;
+    agent.resetPasswordExpires = undefined;
+
+    await agent.save();
+
+    res.json({
+      message: "Mot de passe réinitialisé avec succès",
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      message: "Erreur serveur",
+    });
+  }
+});
+
 module.exports = router;
