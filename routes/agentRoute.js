@@ -207,36 +207,38 @@ router.post("/forgot-password-agent", async (req, res) => {
       return res.status(400).json({ message: "Email requis" });
     }
 
-    // Vérifier si l'agent existe
     const agent = await Agent.findOne({ email });
 
     if (!agent) {
       return res.status(404).json({ message: "Email introuvable" });
     }
 
-    // Générer un token
     const token = crypto.randomBytes(32).toString("hex");
-
-    // Expiration 1 heure
     const expires = Date.now() + 3600000;
 
     agent.resetPasswordToken = token;
     agent.resetPasswordExpires = expires;
-
     await agent.save();
 
-    // Configuration Gmail SMTP
+    // Configuration Gmail SMTP sécurisée
     const transporter = nodemailer.createTransport({
-      service: "gmail",
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true,
       auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS
       }
     });
 
-    // Lien de reset
+    // Vérifier la connexion
+    await transporter.verify().catch(err => {
+      console.error("Erreur de connexion SMTP:", err);
+      throw new Error("Impossible de se connecter à Gmail");
+    });
+
     const resetUrl = `https://www.keurgui.sn/#/reset-password-agent/${token}`;
-    // Envoi email
+
     await transporter.sendMail({
       from: `"Keurgui" <${process.env.EMAIL_USER}>`,
       to: agent.email,
@@ -254,13 +256,13 @@ router.post("/forgot-password-agent", async (req, res) => {
     });
 
   } catch (error) {
-    console.error(error);
+    console.error("Erreur complète:", error);
     res.status(500).json({
-      message: "Erreur serveur"
+      message: "Erreur serveur",
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
-
 router.post("/reset-password-agent/:token", async (req, res) => {
   try {
     const { token } = req.params;
