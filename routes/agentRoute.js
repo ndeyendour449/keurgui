@@ -201,78 +201,53 @@ router.post("/agents", upload.single("photoProfil"), async (req, res) => {
 
 router.post("/forgot-password-agent", async (req, res) => {
   try {
-    console.log("🔍 Début du forgot-password-agent");
-    console.log("EMAIL_USER défini ?", !!process.env.EMAIL_USER);
-    console.log("EMAIL_PASS défini ?", !!process.env.EMAIL_PASS);
-    
     const { email } = req.body;
+    if (!email) return res.status(400).json({ message: "Email requis" });
 
-    if (!email) {
-      return res.status(400).json({ message: "Email requis" });
-    }
-
+    // Vérifier si l'agent existe
     const agent = await Agent.findOne({ email });
+    if (!agent) return res.status(404).json({ message: "Email introuvable" });
 
-    if (!agent) {
-      return res.status(404).json({ message: "Email introuvable" });
-    }
-
+    // Générer un token
     const token = crypto.randomBytes(32).toString("hex");
-    const expires = Date.now() + 3600000;
+    const expires = Date.now() + 3600000; // 1 heure
 
     agent.resetPasswordToken = token;
     agent.resetPasswordExpires = expires;
-
-    console.log("💾 Sauvegarde de l'agent...");
     await agent.save();
 
-    console.log("📧 Configuration du transporter...");
+    // Config Nodemailer avec Gmail App Password
     const transporter = nodemailer.createTransport({
-      host: "smtp.gmail.com",
-      port: 465,
-      secure: true,
+      service: "gmail",
       auth: {
         user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
-      }
+        pass: process.env.EMAIL_PASS, // App Password de 16 caractères
+      },
     });
 
-    console.log("🔗 Vérification de la connexion SMTP...");
-    await transporter.verify();
-    console.log("✅ Connexion SMTP OK");
-
+    // Lien de reset
     const resetUrl = `https://www.keurgui.sn/#/reset-password-agent/${token}`;
 
-    console.log("📤 Envoi de l'email à:", agent.email);
+    // Envoi de l'email
     await transporter.sendMail({
       from: `"Keurgui" <${process.env.EMAIL_USER}>`,
       to: agent.email,
       subject: "Réinitialisation du mot de passe",
       html: `
-        <p>Bonjour ${agent.agentName}</p>
-        <p>Cliquez sur le lien ci-dessous pour réinitialiser votre mot de passe :</p>
+        <p>Bonjour ${agent.agentName},</p>
+        <p>Cliquez sur ce lien pour réinitialiser votre mot de passe :</p>
         <a href="${resetUrl}">${resetUrl}</a>
         <p>Ce lien expire dans 1 heure.</p>
-      `
+      `,
     });
 
-    console.log("✅ Email envoyé avec succès");
-    res.json({
-      message: "Lien de réinitialisation envoyé à votre email"
-    });
-
+    res.json({ message: "Lien de réinitialisation envoyé à votre email" });
   } catch (error) {
-    console.error("❌ ERREUR COMPLÈTE:");
-    console.error("Message:", error.message);
-    console.error("Code:", error.code);
-    console.error("Stack:", error.stack);
-    
-    res.status(500).json({
-      message: "Erreur serveur",
-      errorDetails: error.message // Envoyer au frontend temporairement
-    });
+    console.error("Erreur forgot-password-agent:", error.message, error.stack);
+    res.status(500).json({ message: "Erreur serveur" });
   }
 });
+
 router.post("/reset-password-agent/:token", async (req, res) => {
   try {
     const { token } = req.params;
