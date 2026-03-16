@@ -207,47 +207,76 @@ router.post("/forgot-password-agent", async (req, res) => {
       return res.status(400).json({ message: "Email requis" });
     }
 
+    // Vérifier si l'agent existe
     const agent = await Agent.findOne({ email });
 
     if (!agent) {
       return res.status(404).json({ message: "Email introuvable" });
     }
 
+    // Générer token
     const token = crypto.randomBytes(32).toString("hex");
+
+    // expiration 1 heure
+    const expires = Date.now() + 3600000;
+
     agent.resetPasswordToken = token;
-    agent.resetPasswordExpires = Date.now() + 3600000;
+    agent.resetPasswordExpires = expires;
+
     await agent.save();
 
+    // Configuration Gmail SMTP
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
-      port: 587,
-      secure: false,
-      requireTLS: true,
+      port: 465,
+      secure: true,
       auth: {
         user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS,
+        pass: process.env.EMAIL_PASS
       },
-      connectionTimeout: 120000,
-      socketTimeout: 120000
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000,
+      tls: {
+        rejectUnauthorized: false
+      }
     });
 
+    // Vérifier la connexion SMTP
+    await transporter.verify();
+    console.log("SMTP prêt à envoyer des emails");
+
+    // Lien reset
     const resetUrl = `https://www.keurgui.sn/#/reset-password-agent/${token}`;
-    
-    await transporter.sendMail({
+
+    // Email
+    const mailOptions = {
       from: `"Keurgui" <${process.env.EMAIL_USER}>`,
       to: agent.email,
-      subject: "Reinitialisation mot de passe",
-      text: `Bonjour ${agent.agentName},\n\nCliquez sur ce lien pour reinitialiser votre mot de passe :\n${resetUrl}\n\nCe lien expire dans 1 heure.`
+      subject: "Réinitialisation du mot de passe",
+      html: `
+        <p>Bonjour ${agent.agentName}</p>
+        <p>Cliquez sur le lien pour réinitialiser votre mot de passe :</p>
+        <a href="${resetUrl}">${resetUrl}</a>
+        <p>Ce lien expire dans 1 heure.</p>
+      `
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+
+    console.log("Email envoyé :", info.response);
+
+    res.json({
+      message: "Lien de réinitialisation envoyé à votre email"
     });
 
-    res.json({ message: "Email envoyé avec succès" });
-
   } catch (error) {
-    console.error("Erreur:", error.message);
-    res.status(500).json({ message: "Erreur serveur" });
+    console.error("Erreur forgot-password-agent:", error);
+    res.status(500).json({
+      message: "Erreur serveur"
+    });
   }
 });
-
 router.post("/reset-password-agent/:token", async (req, res) => {
   try {
     const { token } = req.params;
